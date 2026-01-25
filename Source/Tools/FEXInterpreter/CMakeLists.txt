@@ -60,7 +60,7 @@ if (_M_ARM_64)
     # Just restart the systemd service
     add_custom_target(binfmt_misc
       echo "Restarting systemd service now."
-      COMMAND "service" "systemd-binfmt" "restart"
+      #COMMAND "service" "systemd-binfmt" "restart"
     )
   else()
     # Check for conflicting binfmt before installing
