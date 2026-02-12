@@ -41,8 +41,8 @@ if (ARCHITECTURE_arm64)
   if (NOT USE_LEGACY_BINFMTMISC)
     # Just restart the systemd service
     add_custom_target(binfmt_misc
-      echo "Restarting systemd service now."
-      #COMMAND "service" "systemd-binfmt" "restart")
+      echo "Restarting systemd service now.")
+      #COMMAND "service" "systemd-binfmt" "restart"
   else()
     # Check for conflicting binfmt before installing
     set(CONFLICTING_BINFMTS_32
