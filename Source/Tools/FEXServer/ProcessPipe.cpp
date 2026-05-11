@@ -12,6 +12,7 @@
 #include <FEXCore/HLE/SourcecodeResolver.h>
 
 #include <fmt/ranges.h>
+#include <inttypes.h>
 
 #include <atomic>
 #include <cassert>
@@ -64,6 +65,9 @@ static std::string NewCodeMapDirectory;
 // Path to directory for processed code maps (suitable for cache generation)
 static std::string ReadyCodeMapDirectory;
 
+// Path to FEXOfflineCompiler executable (inferred from FEXServer install location)
+const std::string OfflineCompilerPath = (std::filesystem::read_symlink("/proc/self/exe").parent_path() / "FEXOfflineCompiler").string();
+
 void SetWatchFD(int FD) {
   WatchFD = FD;
 }
@@ -94,8 +98,8 @@ void CheckRaiseFDLimit() {
   if (MaxFDs.rlim_cur == MaxFDs.rlim_max) {
     fprintf(stderr, "[FEXMountDaemon] Our open FD limit is already set to max and we are wanting to increase it\n");
     fprintf(stderr, "[FEXMountDaemon] FEXMountDaemon will now no longer be able to track new instances of FEX\n");
-    fprintf(stderr, "[FEXMountDaemon] Current limit is %zd(hard %zd) FDs and we are at %zd\n", MaxFDs.rlim_cur, MaxFDs.rlim_max,
-            GetNumFilesOpen());
+    fprintf(stderr, "[FEXMountDaemon] Current limit is %" PRIuMAX "(hard %" PRIuMAX ") FDs and we are at %zu\n", (uintmax_t)MaxFDs.rlim_cur,
+            (uintmax_t)MaxFDs.rlim_max, GetNumFilesOpen());
     fprintf(stderr, "[FEXMountDaemon] Ask your administrator to raise your kernel's hard limit on open FDs\n");
     return;
   }
@@ -109,7 +113,8 @@ void CheckRaiseFDLimit() {
   NewLimit.rlim_cur = std::min(NewLimit.rlim_cur, NewLimit.rlim_max);
 
   if (setrlimit(RLIMIT_NOFILE, &NewLimit) != 0) {
-    fprintf(stderr, "[FEXMountDaemon] Couldn't raise FD limit to %zd even though our hard limit is %zd\n", NewLimit.rlim_cur, NewLimit.rlim_max);
+    fprintf(stderr, "[FEXMountDaemon] Couldn't raise FD limit to %" PRIu64 " even though our hard limit is %" PRIu64 "\n",
+            (uintmax_t)NewLimit.rlim_cur, (uintmax_t)NewLimit.rlim_max);
   } else {
     // Set the new limit
     MaxFDs = NewLimit;
@@ -470,8 +475,8 @@ int32_t EmbedSubprocess(const char* path, char* const* args) {
  * Spawn a FEXOfflineCompiler instance to generate a code cache from the given code map
  */
 static int RunOfflineCompiler(const char* CodeMap) {
-  const char* ExecveArgs[] = {"FEXOfflineCompiler", "generate", CodeMap, nullptr};
-  return EmbedSubprocess("FEXOfflineCompiler", const_cast<char* const*>(&ExecveArgs[0]));
+  const char* ExecveArgs[] = {OfflineCompilerPath.c_str(), "generate", CodeMap, nullptr};
+  return EmbedSubprocess(OfflineCompilerPath.c_str(), const_cast<char* const*>(&ExecveArgs[0]));
 };
 
 void HandleSocketData(fasio::tcp_socket& Socket) {

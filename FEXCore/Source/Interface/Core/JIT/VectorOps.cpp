@@ -1434,8 +1434,8 @@ DEF_OP(VFMin) {
       bif(Dst.Q(), Vector2.Q(), VTMP1.Q());
     } else if (Dst == Vector2) {
       // Destination is already Vector2, Invert arguments and insert Vector1 on false.
-      fcmgt(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
-      bif(Dst.Q(), Vector1.Q(), VTMP1.Q());
+      fcmgt(SubRegSize, VTMP1.Q(), Vector2.Q(), Vector1.Q());
+      bit(Dst.Q(), Vector1.Q(), VTMP1.Q());
     } else {
       // Dst is not either source, need a move.
       fcmgt(SubRegSize, VTMP1.Q(), Vector2.Q(), Vector1.Q());
@@ -1466,7 +1466,8 @@ DEF_OP(VFMax) {
     const auto Mask = PRED_TMP_32B;
     const auto ComparePred = ARMEmitter::PReg::p0;
 
-    fcmgt(SubRegSize, ComparePred, Mask.Zeroing(), Vector2.Z(), Vector1.Z());
+    fcmgt(SubRegSize, ComparePred, Mask.Zeroing(), Vector1.Z(), Vector2.Z());
+    not_(ComparePred, Mask.Zeroing(), ComparePred);
 
     if (Dst == Vector1) {
       // Trivial case where Vector1 is also the destination.
@@ -1488,17 +1489,17 @@ DEF_OP(VFMax) {
 
     if (Dst == Vector1) {
       // Destination is already Vector1, need to insert Vector2 on true.
-      fcmgt(SubRegSize, VTMP1.Q(), Vector2.Q(), Vector1.Q());
-      bit(Dst.Q(), Vector2.Q(), VTMP1.Q());
+      fcmgt(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
+      bif(Dst.Q(), Vector2.Q(), VTMP1.Q());
     } else if (Dst == Vector2) {
       // Destination is already Vector2, Invert arguments and insert Vector1 on true.
       fcmgt(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
       bit(Dst.Q(), Vector1.Q(), VTMP1.Q());
     } else {
       // Dst is not either source, need a move.
-      fcmgt(SubRegSize, VTMP1.Q(), Vector2.Q(), Vector1.Q());
+      fcmgt(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
       mov(Dst.Q(), Vector1.Q());
-      bit(Dst.Q(), Vector2.Q(), VTMP1.Q());
+      bif(Dst.Q(), Vector2.Q(), VTMP1.Q());
     }
   }
 }
@@ -4644,6 +4645,66 @@ DEF_OP(F64TAN) {
 
   fmov(VTMP1.D(), Src.D());
   ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64TanHandler));
+  str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
+  blr(TMP1);
+  ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);
+  fmov(Dst.D(), VTMP1.D());
+}
+
+// Src1=y(ST1), Src2=x(ST0). Marshal into VTMP1/VTMP2 and dispatch the shared handler.
+DEF_OP(F64ATAN) {
+  const auto Op = IROp->C<IR::IROp_F64ATAN>();
+  const auto Src1 = GetVReg(Op->Src1);
+  const auto Src2 = GetVReg(Op->Src2);
+  const auto Dst = GetVReg(Node);
+
+  fmov(VTMP1.D(), Src1.D());
+  fmov(VTMP2.D(), Src2.D());
+  ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64AtanHandler));
+  str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
+  blr(TMP1);
+  ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);
+  fmov(Dst.D(), VTMP1.D());
+}
+
+// Src=x(ST0), Src2=y(ST1). Marshal into VTMP1/VTMP2 and dispatch the shared handler.
+DEF_OP(F64FYL2X) {
+  const auto Op = IROp->C<IR::IROp_F64FYL2X>();
+  const auto Src = GetVReg(Op->Src);
+  const auto Src2 = GetVReg(Op->Src2);
+  const auto Dst = GetVReg(Node);
+
+  fmov(VTMP1.D(), Src.D());
+  fmov(VTMP2.D(), Src2.D());
+  ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64FYL2XHandler));
+  str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
+  blr(TMP1);
+  ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);
+  fmov(Dst.D(), VTMP1.D());
+}
+
+DEF_OP(F64SCALE) {
+  const auto Op = IROp->C<IR::IROp_F64SCALE>();
+  const auto Src1 = GetVReg(Op->Src1);
+  const auto Src2 = GetVReg(Op->Src2);
+  const auto Dst = GetVReg(Node);
+
+  fmov(VTMP1.D(), Src1.D());
+  fmov(VTMP2.D(), Src2.D());
+  ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64ScaleHandler));
+  str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
+  blr(TMP1);
+  ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);
+  fmov(Dst.D(), VTMP1.D());
+}
+
+DEF_OP(F64F2XM1) {
+  const auto Op = IROp->C<IR::IROp_F64F2XM1>();
+  const auto Src = GetVReg(Op->Src);
+  const auto Dst = GetVReg(Node);
+
+  fmov(VTMP1.D(), Src.D());
+  ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64F2XM1Handler));
   str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
   blr(TMP1);
   ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);

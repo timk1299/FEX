@@ -28,6 +28,7 @@ $end_info$
 #include <FEXCore/Utils/SignalScopeGuards.h>
 
 #include "Windows/Common/Allocator.h"
+#include "Windows/Common/EnvironmentVariablesHandling.h"
 #include "Common/CallRetStack.h"
 #include "Common/JITGuardPage.h"
 #include "Common/Config.h"
@@ -595,6 +596,8 @@ NTSTATUS ProcessInit() {
   const bool IsWine = !!GetProcAddress(NtDll, "wine_get_version");
   OvercommitTracker.emplace(IsWine);
 
+  FEX::Windows::SetupEnvironmentVariableValues(NtDll);
+
   FEX::Windows::Allocator::SetupHooks(NtDll);
 
   {
@@ -677,7 +680,7 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
     // A suspend interrupt can occur in ExitFunctionEC before InSimulation is unset and set SuspendDoorbell. If this
     // occurs then it is still our duty to cooperatively suspend with an appropriate context. To support this, after
     // unsetting InSimulation a brk #0xCAFE instruction will be raised that we can handle here.
-    NativeContext->Pc = reinterpret_cast<uintptr_t>(ExitFunctionSuspendResumePoint); // Jump to the suspend resume point.
+    NativeContext->Pc = reinterpret_cast<uintptr_t>(&ExitFunctionSuspendResumePoint); // Jump to the suspend resume point.
     *CPUArea.Area->SuspendDoorbell = 0;
     return true;
   }

@@ -2758,7 +2758,7 @@
     "F64": {
       "FPR = F64ATAN FPR:$Src1, FPR:$Src2": {
         "DestSize": "OpSize::i64Bit",
-        "JITDispatch": false
+        "JITDispatch": true
       },
       "FPR = F64FPREM FPR:$Src1, FPR:$Src2": {
         "DestSize": "OpSize::i64Bit",
@@ -2770,15 +2770,15 @@
       },
       "FPR = F64SCALE FPR:$Src1, FPR:$Src2": {
         "DestSize": "OpSize::i64Bit",
-        "JITDispatch": false
+        "JITDispatch": true
       },
       "FPR = F64F2XM1 FPR:$Src": {
         "DestSize": "OpSize::i64Bit",
-        "JITDispatch": false
+        "JITDispatch": true
       },
       "FPR = F64FYL2X FPR:$Src, FPR:$Src2": {
         "DestSize": "OpSize::i64Bit",
-        "JITDispatch": false
+        "JITDispatch": true
       },
       "FPR = F64TAN FPR:$Src": {
         "DestSize": "OpSize::i64Bit",

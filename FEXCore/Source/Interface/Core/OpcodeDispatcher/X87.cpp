@@ -163,7 +163,7 @@ void OpDispatchBuilder::FIST(OpcodeArgs, bool Truncate) {
 
     // Check for NaN/Infinity: exponent = 0x7fff
     SaveNZCV();
-    _TestNZ(OpSize::i64Bit, Exponent, Constant(0x7fff));
+    SubWithFlags(OpSize::i64Bit, Exponent, 0x7fff);
     Ref IsSpecial = _NZCVSelect01(CondClass::EQ);
 
     // For overflow detection, check if exponent indicates a value >= 2^15
@@ -178,7 +178,8 @@ void OpDispatchBuilder::FIST(OpcodeArgs, bool Truncate) {
 
   Data = _F80CVTInt(Size, Data, Truncate);
 
-  StoreResultGPR_WithOpSize(Op, Op->Dest, Data, Size, OpSize::i8Bit);
+  StoreResultGPR_WithOpSize(Op, Op->Dest, Data, Size, OpSize::i8Bit,
+                            CTX->IsVectorAtomicTSOEnabled() ? MemoryAccessType::DEFAULT : MemoryAccessType::NONTSO);
 
   if ((Op->TableInfo->Flags & X86Tables::InstFlags::FLAGS_POP) != 0) {
     _PopStackDestroy();

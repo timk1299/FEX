@@ -300,12 +300,10 @@ bool CodeCache::SaveData(Core::InternalThreadState& Thread, int fd, const Execut
   ::write(fd, Relocations.data(), Relocations.size() * sizeof(Relocations[0]));
 
   // Pad to next page in file so that the CodeBuffer can be mmap'ed into process on load
-  char Zero[64] {};
-  auto Off = lseek(fd, 0, SEEK_CUR);
-  while (Off != AlignUp(Off, Utils::FEX_PAGE_SIZE)) {
-    auto BytesToWrite = std::min(AlignUp(Off, Utils::FEX_PAGE_SIZE) - Off, sizeof(Zero));
-    ::write(fd, Zero, BytesToWrite);
-    Off += BytesToWrite;
+  {
+    auto AlignedSize = AlignUp(lseek(fd, 0, SEEK_CUR), Utils::FEX_PAGE_SIZE);
+    ::ftruncate(fd, AlignedSize);
+    lseek(fd, AlignedSize, SEEK_SET);
   }
 
   // Dump the host code (relocated for position-independent serialization)
@@ -381,17 +379,6 @@ bool CodeCache::LoadData(Core::InternalThreadState* Thread, std::byte* MappedCac
       BlockPtr.second.CodePages.resize(NumGuestPages);
       ::memcpy(BlockPtr.second.CodePages.data(), MappedCacheFile, std::span {BlockPtr.second.CodePages}.size_bytes());
       MappedCacheFile += std::span {BlockPtr.second.CodePages}.size_bytes();
-    }
-
-    // Consistency check: VMA regions at the top and end should belong to the same file
-    auto [min_val, max_val] = ranges::minmax_element(BlockList, std::less {}, &decltype(BlockList)::value_type::first);
-    auto MinBound = CTX.SyscallHandler->LookupExecutableFileSection(Thread, min_val->first + BinarySection.FileStartVA);
-    auto MaxBound = CTX.SyscallHandler->LookupExecutableFileSection(Thread, max_val->first + BinarySection.FileStartVA);
-    if (&MinBound->FileInfo != &BinarySection.FileInfo || &MaxBound->FileInfo != &BinarySection.FileInfo) {
-      ERROR_AND_DIE_FMT("Cached blocks offsets {:#x}-{:#x} out of bounds for guest library {} ({:016x} @ {:#x}) while trying to load "
-                        "section {:#x}-{:#x}!",
-                        min_val->first, max_val->first, BinarySection.FileInfo.Filename, BinarySection.FileInfo.FileId,
-                        BinarySection.FileStartVA, BinarySection.BeginVA, BinarySection.EndVA);
     }
 
     // Constrain BlockList to the given ExecutableFileSectionInfo

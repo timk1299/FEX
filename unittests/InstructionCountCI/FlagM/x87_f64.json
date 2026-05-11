@@ -2142,7 +2142,7 @@
       ]
     },
     "f2xm1": {
-      "ExpectedInstructionCount": 11,
+      "ExpectedInstructionCount": 10,
       "Comment": [
         "0xd9 11b 0xf0 /6"
       ],
@@ -2150,10 +2150,9 @@
         "ldrb w20, [x28, #1051]",
         "add x20, x28, x20, lsl #4",
         "ldr d2, [x20, #1056]",
-        "str x30, [sp, #-16]!",
         "fmov d0, d2",
-        "ldr x0, [x28, #2248]",
-        "ldr x3, [x28, #2256]",
+        "ldr x0, [x28, #3008]",
+        "str x30, [sp, #-16]!",
         "blr x0",
         "ldr x30, [sp], #16",
         "fmov d2, d0",
@@ -2161,7 +2160,7 @@
       ]
     },
     "fyl2x": {
-      "ExpectedInstructionCount": 17,
+      "ExpectedInstructionCount": 16,
       "Comment": [
         "0xd9 11b 0xf1 /6"
       ],
@@ -2173,11 +2172,10 @@
         "ldr d2, [x22, #1056]",
         "add x20, x28, x20, lsl #4",
         "ldr d3, [x20, #1056]",
-        "str x30, [sp, #-16]!",
         "fmov d0, d3",
         "fmov d1, d2",
-        "ldr x0, [x28, #2264]",
-        "ldr x3, [x28, #2272]",
+        "ldr x0, [x28, #3032]",
+        "str x30, [sp, #-16]!",
         "blr x0",
         "ldr x30, [sp], #16",
         "fmov d2, d0",
@@ -2217,7 +2215,7 @@
       ]
     },
     "fpatan": {
-      "ExpectedInstructionCount": 17,
+      "ExpectedInstructionCount": 16,
       "Comment": [
         "0xd9 11b 0xf3 /6"
       ],
@@ -2229,11 +2227,10 @@
         "and w20, w20, #0x7",
         "add x21, x28, x20, lsl #4",
         "ldr d3, [x21, #1056]",
-        "str x30, [sp, #-16]!",
         "fmov d0, d3",
         "fmov d1, d2",
-        "ldr x0, [x28, #2232]",
-        "ldr x3, [x28, #2240]",
+        "ldr x0, [x28, #3024]",
+        "str x30, [sp, #-16]!",
         "blr x0",
         "ldr x30, [sp], #16",
         "fmov d2, d0",
@@ -2242,7 +2239,7 @@
       ]
     },
     "fxtract": {
-      "ExpectedInstructionCount": 30,
+      "ExpectedInstructionCount": 40,
       "Comment": [
         "0xd9 11b 0xf4 /6"
       ],
@@ -2253,13 +2250,23 @@
         "mov x22, v2.d[0]",
         "mov x23, #0xfff0000000000000",
         "fmov d3, x23",
+        "mov x23, #0x7ff0000000000000",
+        "fmov d4, x23",
         "ubfx x23, x22, #52, #11",
         "sub x23, x23, #0x3ff (1023)",
-        "scvtf d4, x23",
+        "scvtf d5, x23",
         "and x23, x22, #0x800fffffffffffff",
         "orr x23, x23, #0x3ff0000000000000",
-        "fmov d5, x23",
+        "fmov d6, x23",
         "mrs x23, nzcv",
+        "and x24, x22, #0xfffffffffffff",
+        "mov x30, #0xffffffffffffffff",
+        "tst x24, x30",
+        "fcsel d4, d4, d2, eq",
+        "ubfx x24, x22, #52, #11",
+        "cmp x24, #0x7ff (2047)",
+        "fcsel d4, d4, d5, eq",
+        "fcsel d5, d2, d6, eq",
         "tst x22, #0x7fffffffffffffff",
         "fcsel d2, d2, d5, eq",
         "fcsel d3, d3, d4, eq",
@@ -2354,7 +2361,7 @@
       ]
     },
     "fyl2xp1": {
-      "ExpectedInstructionCount": 21,
+      "ExpectedInstructionCount": 20,
       "Comment": [
         "0xd9 11b 0xf9 /7"
       ],
@@ -2369,11 +2376,10 @@
         "and w20, w20, #0x7",
         "add x22, x28, x20, lsl #4",
         "ldr d3, [x22, #1056]",
-        "str x30, [sp, #-16]!",
         "fmov d0, d2",
         "fmov d1, d3",
-        "ldr x0, [x28, #2264]",
-        "ldr x3, [x28, #2272]",
+        "ldr x0, [x28, #3032]",
+        "str x30, [sp, #-16]!",
         "blr x0",
         "ldr x30, [sp], #16",
         "fmov d3, d0",
@@ -2444,7 +2450,7 @@
       ]
     },
     "fscale": {
-      "ExpectedInstructionCount": 16,
+      "ExpectedInstructionCount": 15,
       "Comment": [
         "0xd9 11b 0xfd /7"
       ],
@@ -2456,11 +2462,10 @@
         "ldr d2, [x21, #1056]",
         "add x20, x28, x20, lsl #4",
         "ldr d3, [x20, #1056]",
-        "str x30, [sp, #-16]!",
         "fmov d0, d3",
         "fmov d1, d2",
-        "ldr x0, [x28, #2312]",
-        "ldr x3, [x28, #2320]",
+        "ldr x0, [x28, #3016]",
+        "str x30, [sp, #-16]!",
         "blr x0",
         "ldr x30, [sp], #16",
         "fmov d2, d0",
@@ -5340,8 +5345,8 @@
         "ldrb w20, [x28, #1051]",
         "add x21, x28, x20, lsl #4",
         "ldr d2, [x21, #1056]",
-        "fcvtzs x21, d2",
-        "str x21, [x4]",
+        "fcvtzs v2.2d, v2.2d",
+        "str d2, [x4]",
         "add w21, w20, #0x1 (1)",
         "and w21, w21, #0x7",
         "strb w21, [x28, #1051]",

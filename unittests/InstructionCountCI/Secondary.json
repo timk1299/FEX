@@ -651,7 +651,7 @@
       "Comment": "0x0f 0x50",
       "ExpectedArm64ASM": [
         "ushr v2.4s, v16.4s, #31",
-        "ldr q3, [x28, #3168]",
+        "ldr q3, [x28, #3200]",
         "ushl v2.4s, v2.4s, v3.4s",
         "addv s2, v2.4s",
         "mov w4, v2.s[0]"
@@ -662,7 +662,7 @@
       "Comment": "0x0f 0x50",
       "ExpectedArm64ASM": [
         "ushr v2.4s, v16.4s, #31",
-        "ldr q3, [x28, #3168]",
+        "ldr q3, [x28, #3200]",
         "ushl v2.4s, v2.4s, v3.4s",
         "addv s2, v2.4s",
         "mov w4, v2.s[0]"
@@ -793,8 +793,8 @@
       "ExpectedInstructionCount": 2,
       "Comment": "0x0f 0x5f",
       "ExpectedArm64ASM": [
-        "fcmgt v0.4s, v17.4s, v16.4s",
-        "bit v16.16b, v17.16b, v0.16b"
+        "fcmgt v0.4s, v16.4s, v17.4s",
+        "bif v16.16b, v17.16b, v0.16b"
       ]
     },
     "punpcklbw mm0, mm1": {
@@ -1153,32 +1153,30 @@
       ]
     },
     "pshufw mm0, mm1, 1": {
-      "ExpectedInstructionCount": 9,
+      "ExpectedInstructionCount": 8,
       "Comment": "0x0f 0x70",
       "ExpectedArm64ASM": [
         "strb wzr, [x28, #1051]",
         "mov w20, #0xffff",
         "strb w20, [x28, #1202]",
         "ldr d2, [x28, #1072]",
-        "ldr x0, [x28, #2672]",
-        "ldr d3, [x0, #16]",
-        "tbl v2.8b, {v2.16b}, v3.8b",
-        "str d2, [x28, #1056]",
+        "dup v3.4h, v2.h[0]",
+        "mov v3.h[0], v2.h[1]",
+        "str d3, [x28, #1056]",
         "strh w20, [x28, #1064]"
       ]
     },
     "pshufw mm0, [rax], 1": {
-      "ExpectedInstructionCount": 9,
+      "ExpectedInstructionCount": 8,
       "Comment": "0x0f 0x70",
       "ExpectedArm64ASM": [
         "ldr d2, [x4]",
-        "ldr x0, [x28, #2672]",
-        "ldr d3, [x0, #16]",
-        "tbl v2.8b, {v2.16b}, v3.8b",
+        "dup v3.4h, v2.h[0]",
+        "mov v3.h[0], v2.h[1]",
         "strb wzr, [x28, #1051]",
         "mov w20, #0xffff",
         "strb w20, [x28, #1202]",
-        "str d2, [x28, #1056]",
+        "str d3, [x28, #1056]",
         "strh w20, [x28, #1064]"
       ]
     },
@@ -3697,7 +3695,7 @@
         "mov w20, #0xffff",
         "strb w20, [x28, #1202]",
         "ldr d2, [x28, #1056]",
-        "ldr d3, [x28, #3296]",
+        "ldr d3, [x28, #3328]",
         "cmlt v2.16b, v2.16b, #0",
         "and v2.8b, v2.8b, v3.8b",
         "addp v2.16b, v2.16b, v2.16b",
