@@ -630,7 +630,7 @@ void OpDispatchBuilder::AVX128_VPSIGN(OpcodeArgs, IR::OpSize ElementSize) {
 }
 
 void OpDispatchBuilder::AVX128_UCOMISx(OpcodeArgs, IR::OpSize ElementSize) {
-  const auto SrcSize = Op->Src[0].IsGPR() ? GetGuestVectorLength() : ElementSize;
+  const auto SrcSize = Op->Src[0].IsGPR() ? OpSize::i128Bit : ElementSize;
 
   auto Src1 = AVX128_LoadSource_WithOpSize(Op, Op->Dest, Op->Flags, false);
 
@@ -1260,26 +1260,26 @@ void OpDispatchBuilder::AVX128_VAESKeyGenAssist(OpcodeArgs) {
 }
 
 void OpDispatchBuilder::AVX128_VPCMPESTRI(OpcodeArgs) {
-  PCMPXSTRXOpImpl(Op, true, false);
+  PCMPXSTRXOpImpl(Op, true, false, true);
 
   ///< Does not zero anything.
 }
 
 void OpDispatchBuilder::AVX128_VPCMPESTRM(OpcodeArgs) {
-  PCMPXSTRXOpImpl(Op, true, true);
+  PCMPXSTRXOpImpl(Op, true, true, true);
 
   ///< Zero the upper 128-bits of hardcoded YMM0
   AVX128_StoreXMMRegister(0, LoadZeroVector(OpSize::i128Bit), true);
 }
 
 void OpDispatchBuilder::AVX128_VPCMPISTRI(OpcodeArgs) {
-  PCMPXSTRXOpImpl(Op, false, false);
+  PCMPXSTRXOpImpl(Op, false, false, true);
 
   ///< Does not zero anything.
 }
 
 void OpDispatchBuilder::AVX128_VPCMPISTRM(OpcodeArgs) {
-  PCMPXSTRXOpImpl(Op, false, true);
+  PCMPXSTRXOpImpl(Op, false, true, true);
 
   ///< Zero the upper 128-bits of hardcoded YMM0
   AVX128_StoreXMMRegister(0, LoadZeroVector(OpSize::i128Bit), true);
@@ -1399,13 +1399,13 @@ void OpDispatchBuilder::AVX128_VSHUF(OpcodeArgs, IR::OpSize ElementSize) {
   auto Src2 = AVX128_LoadSource_WithOpSize(Op, Op->Src[1], Op->Flags, !Is128Bit);
 
   RefPair Result {};
-  Result.Low = SHUFOpImpl(Op, OpSize::i128Bit, ElementSize, Src1.Low, Src2.Low, Shuffle);
+  Result.Low = SHUFOpImpl(OpSize::i128Bit, ElementSize, Src1.Low, Src2.Low, Shuffle);
 
   if (Is128Bit) {
     Result.High = LoadZeroVector(OpSize::i128Bit);
   } else {
     const uint8_t ShiftAmount = ElementSize == OpSize::i32Bit ? 0 : 2;
-    Result.High = SHUFOpImpl(Op, OpSize::i128Bit, ElementSize, Src1.High, Src2.High, Shuffle >> ShiftAmount);
+    Result.High = SHUFOpImpl(OpSize::i128Bit, ElementSize, Src1.High, Src2.High, Shuffle >> ShiftAmount);
   }
   AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
 }
@@ -1484,12 +1484,12 @@ void OpDispatchBuilder::AVX128_VBLEND(OpcodeArgs, IR::OpSize ElementSize) {
   auto Src2 = AVX128_LoadSource_WithOpSize(Op, Op->Src[1], Op->Flags, !Is128Bit);
 
   RefPair Result {};
-  Result.Low = VectorBlend(OpSize::i128Bit, ElementSize, Src1.Low, Src2.Low, Selector);
+  Result.Low = VectorBlendImpl(OpSize::i128Bit, ElementSize, Src1.Low, Src2.Low, Selector);
 
   if (Is128Bit) {
     Result = AVX128_Zext(Result.Low);
   } else {
-    Result.High = VectorBlend(OpSize::i128Bit, ElementSize, Src1.High, Src2.High, (Selector >> SelectorShift));
+    Result.High = VectorBlendImpl(OpSize::i128Bit, ElementSize, Src1.High, Src2.High, (Selector >> SelectorShift));
   }
 
   AVX128_StoreResult_WithOpSize(Op, Op->Dest, Result);
@@ -2293,9 +2293,8 @@ void OpDispatchBuilder::AVX128_VCVTPS2PH(OpcodeArgs) {
     _PopRoundingMode(OldFPCR);
   }
 
-  // We need to eliminate upper junk if we're storing into a register with
-  // a 256-bit source (VCVTPS2PH's destination for registers is an XMM).
-  if (Op->Src[0].IsGPR() && SrcSize == OpSize::i256Bit) {
+  // We need to zero the upper 128 bits if we're storing into a register
+  if (Op->Dest.IsGPR()) {
     Result = AVX128_Zext(Result.Low);
   }
 

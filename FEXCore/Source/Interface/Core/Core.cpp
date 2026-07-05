@@ -358,6 +358,16 @@ bool ContextImpl::InitCore() {
     Config.NeedsPendingInterruptFaultCheck = true;
   }
 
+  if constexpr (BLOCK_DEBUGGING) {
+    // If the developer wants to do any single-stepping points or watch points.
+    // Add them here.
+    //
+    // eg:
+    // BlockDebuggerTracker.AllTargetSingleStep();
+    // BlockDebuggerTracker.AddSingleStepTarget(0x14000'0000ULL);
+    // BlockDebuggerTracker.AddWriteWatchPoint(0x420BA5ED);
+  }
+
   return true;
 }
 
@@ -376,7 +386,7 @@ void ContextImpl::ExecuteThread(FEXCore::Core::InternalThreadState* Thread) {
 }
 
 void ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread) {
-  Thread->OpDispatcher = fextl::make_unique<FEXCore::IR::OpDispatchBuilder>(this);
+  Thread->OpDispatcher = fextl::make_unique<FEXCore::IR::OpDispatchBuilder>(this, Thread);
   Thread->OpDispatcher->SetMultiblock(Config.Multiblock);
   Thread->LookupCache = fextl::make_unique<FEXCore::LookupCache>(this);
   Thread->FrontendDecoder = fextl::make_unique<FEXCore::Frontend::Decoder>(Thread);
@@ -456,7 +466,6 @@ void ContextImpl::UnlockAfterFork(FEXCore::Core::InternalThreadState* LiveThread
     if (Config.StrictInProcessSplitLocks) {
       FEXCore::Utils::SpinWaitLock::unlock(&StrictSplitLockMutex);
     }
-    return;
   }
 }
 
@@ -641,6 +650,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->SetTrueJumpTarget(InvalidateCodeCond, CodeWasChangedBlock);
 
           Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
+          Thread->OpDispatcher->StartNewBlock();
           Thread->OpDispatcher->_ThreadRemoveCodeEntry();
           Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, InstAddress - GuestRIP));
 
@@ -648,6 +658,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
           Thread->OpDispatcher->SetFalseJumpTarget(InvalidateCodeCond, NextOpBlock);
           Thread->OpDispatcher->SetCurrentCodeBlock(NextOpBlock);
+          Thread->OpDispatcher->StartNewBlock();
         }
 
         if (TableInfo && TableInfo->OpcodeDispatcher.OpDispatch) {
@@ -695,6 +706,8 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
             if (Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::INVALID_INST ||
                 Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BAD_RELOCATION) {
               Thread->OpDispatcher->InvalidOp(DecodedInfo);
+            } else if (Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::UNIMPLEMENTED_INST) {
+              Thread->OpDispatcher->UnimplementedOp(DecodedInfo);
             } else {
               Thread->OpDispatcher->NoExecOp(DecodedInfo);
             }
@@ -818,6 +831,17 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
 }
 
 uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP, uint64_t MaxInst) {
+  if constexpr (BLOCK_DEBUGGING) {
+    // Block debugging logic is hand-written and needs to be handled with care.
+    // Force MaxInst to only be one in this case.
+    MaxInst = 1;
+
+    // If the entrypoint is part of the single step targets then single step it.
+    if (BlockDebuggerTracker.IsSingleStepTarget(GuestRIP)) {
+      return CompileSingleStep(Frame, GuestRIP);
+    }
+  }
+
   auto Thread = Frame->Thread;
   FEXCORE_PROFILE_SCOPED("CompileBlock");
   FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedJITTime);

@@ -30,6 +30,7 @@ $end_info$
 
 #include "Windows/Common/Allocator.h"
 #include "Windows/Common/EnvironmentVariablesHandling.h"
+#include "Windows/Common/FEXUnixLib.h"
 #include "Common/CallRetStack.h"
 #include "Common/JITGuardPage.h"
 #include "Common/Config.h"
@@ -527,11 +528,10 @@ void BTCpuProcessInit() {
   OvercommitTracker.emplace(IsWine);
 
   FEX::Windows::Allocator::SetupHooks(NtDll);
+  FEX::Windows::UnixLib::Init(NtDll);
 
   {
-    auto HostFeatures = FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine);
-    // AVX is unsupported for WOW64
-    HostFeatures.SupportsAVX = false;
+    auto HostFeatures = FEX::Windows::CPUFeatures::FetchHostFeatures(IsWine, FEXCore::HostFeatures::HostTypeEnum::Wow64);
     CTX = FEXCore::Context::Context::CreateNewContext(HostFeatures);
   }
 
@@ -568,15 +568,6 @@ void BTCpuProcessInit() {
 
   // wow64.dll will only initialise the cross-process queue if this is set
   GetTLS().Wow64Info().CpuFlags = WOW64_CPUFLAGS_SOFTWARE;
-
-  FEX_CONFIG_OPT(TSOEnabled, TSOENABLED);
-  if (TSOEnabled()) {
-    BOOL Enable = TRUE;
-    NTSTATUS Status = NtSetInformationProcess(NtCurrentProcess(), ProcessFexHardwareTso, &Enable, sizeof(Enable));
-    if (Status == STATUS_SUCCESS) {
-      CTX->SetHardwareTSOSupport(true);
-    }
-  }
 
   FEX_CONFIG_OPT(ProfileStats, PROFILESTATS);
   FEX_CONFIG_OPT(StartupSleep, STARTUPSLEEP);
@@ -932,7 +923,7 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
   LogMan::Msg::DFmt("pc: {:X} eip: {:X}", Context->Pc, WowContext.Eip);
 
   auto& Fault = Thread->CurrentFrame->SynchronousFaultData;
-  *Exception = FEX::Windows::HandleGuestException(Fault, *Exception, WowContext.Eip, WowContext.Eax);
+  *Exception = FEX::Windows::HandleGuestException(Fault, *Exception, WowContext.Eip, WowContext.Eax, WowContext.Ecx);
   if (Exception->ExceptionCode == EXCEPTION_SINGLE_STEP) {
     WowContext.EFlags &= ~(1 << FEXCore::X86State::RFLAG_TF_RAW_LOC);
   }
@@ -1040,6 +1031,11 @@ void BTCpuNotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After, 
       ThreadCreationMutex.unlock();
     }
   }
+}
+
+void BTCpuNotifyProcessExecuteFlagsChange(ULONG Flags) {
+  std::scoped_lock Lock(ThreadCreationMutex);
+  InvalidationTracker->HandleProcessExecuteFlagsChange(Flags);
 }
 
 BOOLEAN WINAPI BTCpuIsProcessorFeaturePresent(UINT Feature) {

@@ -108,6 +108,8 @@ public:
 
   // does a guest munmap as if done via a guest syscall
   virtual uint64_t GuestMunmap(FEXCore::Core::InternalThreadState* Thread, void* addr, uint64_t length) = 0;
+
+  virtual void AddVirtualPage(FEXCore::Core::InternalThreadState* Thread, uint64_t addr, size_t length, int prot) = 0;
 };
 
 class SyscallHandler : public FEXCore::HLE::SyscallHandler,
@@ -254,6 +256,10 @@ public:
   std::optional<LateApplyExtendedVolatileMetadata> TrackMmap(FEXCore::Core::InternalThreadState* Thread, uint64_t addr, size_t length,
                                                              int prot, int flags, int fd, off_t offset,
                                                              std::optional<FEXCore::ExecutableFileSectionInfo>& CachedSection);
+
+  void AddVirtualPage(FEXCore::Core::InternalThreadState* Thread, uint64_t addr, size_t length, int prot) override;
+  using SyscallMmapInterface::AddVirtualPage;
+
   void TrackMunmap(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length);
   void TrackMremap(FEXCore::Core::InternalThreadState* Thread, uint64_t OldAddress, size_t OldSize, size_t NewSize, int flags, uint64_t NewAddress);
   void TrackShmat(FEXCore::Core::InternalThreadState* Thread, int shmid, uint64_t shmaddr, int shmflg, uint64_t Length);
@@ -261,9 +267,13 @@ public:
   void TrackMprotect(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t len, int prot);
   void TrackMadvise(FEXCore::Core::InternalThreadState* Thread, uintptr_t Base, uintptr_t Size, int advice);
 
-  void InvalidateCodeRangeIfNecessary(FEXCore::Core::InternalThreadState* Thread, uint64_t Base, uint64_t Length) {
+  void InvalidateCodeRangeIfNecessary(FEXCore::Core::InternalThreadState* Thread, uint64_t Base, uint64_t Length, bool CheckPendingVMAResources) {
     if (SMCChecks != FEXCore::Config::CONFIG_SMC_NONE) {
       TM.InvalidateGuestCodeRange(Thread, Base, Length);
+    }
+    if (CheckPendingVMAResources && Thread) {
+      auto lk = FEXCore::GuardSignalDeferringSection(VMATracking.Mutex, Thread);
+      VMATracking.FlushPendingResourceDeletions();
     }
   }
 
@@ -359,6 +369,9 @@ private:
 
   std::mutex FutexMutex;
   std::mutex SyscallMutex;
+  // std::mutex CodeCachePatchingMutex;
+  FEXCore::ForkableUniqueMutex CodeCachePatchingMutex;
+
   FEX::CodeLoader* LocalLoader {};
   bool NeedToCheckXID {true};
 

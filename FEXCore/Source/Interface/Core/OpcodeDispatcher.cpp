@@ -502,7 +502,7 @@ void OpDispatchBuilder::LEAVEOp(OpcodeArgs) {
   auto NewGPR = Pop(OperandSize, SP);
 
   // Store the new stack pointer
-  StoreGPRRegister(X86State::REG_RSP, SP, OperandSize);
+  StoreGPRRegister(X86State::REG_RSP, SP, GPRSize);
 
   // Store what we loaded to RBP
   StoreGPRRegister(X86State::REG_RBP, NewGPR, OperandSize);
@@ -2427,9 +2427,10 @@ void OpDispatchBuilder::BTOp(OpcodeArgs, uint32_t SrcIndex, BTAction Action) {
     auto BitSelect = (Size == (LshrSize * 8)) ? Src : Src.And(Mask);
     auto LshrOpSize = IR::SizeToOpSize(LshrSize);
 
-    // OF/SF/AF/PF undefined. ZF must be preserved. We choose to preserve OF/SF
-    // too since we just use an rmif to insert into CF directly. We could
-    // optimize perhaps.
+    // AMD: OF/SF/ZF/AF/PF undefined.
+    // Intel: OF/SF/AF/PF undefined. ZF must be preserved.
+    // We choose to preserve ZF/OF/SF since we just use an rmif
+    // to insert into CF directly. We could optimize perhaps.
     //
     // Set CF before the action to save a move, except for complements where we
     // can reuse the invert.
@@ -2547,7 +2548,10 @@ void OpDispatchBuilder::BTOp(OpcodeArgs, uint32_t SrcIndex, BTAction Action) {
       Value = _Lshr(std::max(OpSize::i32Bit, GetOpSize(Value)), Value, BitSelect.Ref());
     }
 
-    // OF/SF/ZF/AF/PF undefined.
+    // AMD: OF/SF/ZF/AF/PF undefined.
+    // Intel: OF/SF/AF/PF undefined. ZF must be preserved.
+    // We choose to preserve ZF/OF/SF since we just use an rmif
+    // to insert into CF directly. We could optimize perhaps.
     SetCFDirect(Value, 0, true);
   }
 }
@@ -3449,30 +3453,38 @@ void OpDispatchBuilder::CMPSOp(OpcodeArgs) {
 }
 
 void OpDispatchBuilder::LODSOp(OpcodeArgs) {
-  if (Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_ADDRESS_SIZE) {
-    LogMan::Msg::EFmt("LODSOp: Can't handle address size override (OP: 0x{:04X}, Flags: 0x{:08X})", Op->OP, Op->Flags);
+  if (!Is64BitMode && (Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_ADDRESS_SIZE)) {
+    LogMan::Msg::EFmt("LODSOp: Address size override (0x67) not supported in 32-bit mode (OP: 0x{:04X}).", Op->OP);
     DecodeFailure = true;
     return;
   }
 
   const auto Size = OpSizeFromSrc(Op);
+  OpSize AddrSize = GetStringOpSize(Op);
+
   const bool Repeat = (Op->Flags & (FEXCore::X86Tables::DecodeFlags::FLAG_REP_PREFIX | FEXCore::X86Tables::DecodeFlags::FLAG_REPNE_PREFIX)) != 0;
 
   if (!Repeat) {
-    Ref Dest_RSI = MakeSegmentAddress(X86State::REG_RSI, Op->Flags, X86Tables::DecodeFlags::FLAG_DS_PREFIX);
+    Ref Src_RSI = LoadGPRRegister(X86State::REG_RSI, AddrSize);
+    Ref Dest_RSI = AppendSegmentOffset(Src_RSI, 0, X86Tables::DecodeFlags::FLAG_DS_PREFIX, true);
 
     auto Src = _LoadMemGPRAutoTSO(Size, Dest_RSI, Size);
 
     StoreResultGPR(Op, Src);
 
     // Offset the pointer
-    Ref TailDest_RSI = LoadGPRRegister(X86State::REG_RSI);
-    StoreGPRRegister(X86State::REG_RSI, OffsetByDir(TailDest_RSI, IR::OpSizeToSize(Size)));
+    Ref TailDest_RSI = OffsetByDir(Src_RSI, IR::OpSizeToSize(Size));
+    if (Is64BitMode && AddrSize == OpSize::i32Bit) {
+      TailDest_RSI = _Bfe(OpSize::i64Bit, 32, 0, TailDest_RSI);
+      StoreGPRRegister(X86State::REG_RSI, TailDest_RSI);
+    } else {
+      StoreGPRRegister(X86State::REG_RSI, TailDest_RSI, AddrSize);
+    }
   } else {
     // Calculate flags early. because end of block
     CalculateDeferredFlags();
 
-    ForeachDirection([this, Op, Size](int32_t PtrDir) {
+    ForeachDirection([this, Op, Size, AddrSize](int32_t PtrDir) {
       // XXX: Theoretically LODS could be optimized to
       // RSI += {-}(RCX * Size)
       // RAX = [RSI - Size]
@@ -3500,7 +3512,8 @@ void OpDispatchBuilder::LODSOp(OpcodeArgs) {
 
       // Working loop
       {
-        Ref Dest_RSI = MakeSegmentAddress(X86State::REG_RSI, Op->Flags, X86Tables::DecodeFlags::FLAG_DS_PREFIX);
+        Ref Src_RSI = LoadGPRRegister(X86State::REG_RSI, AddrSize);
+        Ref Dest_RSI = AppendSegmentOffset(Src_RSI, 0, X86Tables::DecodeFlags::FLAG_DS_PREFIX, true);
 
         auto Src = _LoadMemGPRAutoTSO(Size, Dest_RSI, Size);
 
@@ -3516,8 +3529,13 @@ void OpDispatchBuilder::LODSOp(OpcodeArgs) {
         StoreGPRRegister(X86State::REG_RCX, TailCounter);
 
         // Offset the pointer
-        TailDest_RSI = Add(OpSize::i64Bit, TailDest_RSI, PtrDir * static_cast<int32_t>(IR::OpSizeToSize(Size)));
-        StoreGPRRegister(X86State::REG_RSI, TailDest_RSI);
+        TailDest_RSI = Add(AddrSize, TailDest_RSI, PtrDir * static_cast<int32_t>(IR::OpSizeToSize(Size)));
+        if (Is64BitMode && AddrSize == OpSize::i32Bit) {
+          TailDest_RSI = _Bfe(OpSize::i64Bit, 32, 0, TailDest_RSI);
+          StoreGPRRegister(X86State::REG_RSI, TailDest_RSI);
+        } else {
+          StoreGPRRegister(X86State::REG_RSI, TailDest_RSI, AddrSize);
+        }
 
         // Jump back to the start, we have more work to do
         Jump(LoopStart);
@@ -4216,6 +4234,94 @@ void OpDispatchBuilder::UpdatePrefixFromSegment(Ref Segment, uint32_t SegmentReg
   }
 }
 
+uint64_t OpDispatchBuilder::CalcAddress(const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand, bool IsLoad) {
+  if constexpr (!Context::BLOCK_DEBUGGING) {
+    LOGMAN_MSG_A_FMT("Tried to calculate address without block debugging enabled!");
+    FEX_UNREACHABLE;
+  }
+
+  const auto GPRSize = GetGPROpSize();
+  const auto GPRMask = GPRSize == OpSize::i64Bit ? ~0ULL : ~0U;
+
+  // This makes the assumption that InternalThreadState is synchronized at the point of call!
+  uint64_t Ptr {};
+  if (Operand.IsLiteral()) {
+    Ptr = Operand.Literal();
+
+    if (Operand.Data.Literal.Size != 8 && IsLoad) {
+      // zero extend
+      uint64_t width = Operand.Data.Literal.Size * 8;
+      Ptr &= ((1ULL << width) - 1);
+    }
+  } else if (Operand.IsGPR()) {
+    // Not a memory source.
+    return ~0ULL;
+  } else if (Operand.IsGPRDirect()) {
+    Ptr = Thread->CurrentFrame->State.gregs[Operand.Data.GPR.GPR] & GPRMask;
+  } else if (Operand.IsGPRIndirect() || Operand.IsGPRIndirectRelocation()) {
+    Ptr = Thread->CurrentFrame->State.gregs[Operand.Data.GPR.GPR] & GPRMask;
+    Ptr += static_cast<int32_t>(Operand.Data.GPRIndirect.Displacement);
+  } else if (Operand.IsRIPRelative() || Operand.IsRIPRelativeRelocation()) {
+    // 64-bit is RIP relative, while 32-bit is absolute.
+    if (Is64BitMode) {
+      Ptr = Op->PC + Op->InstSize + static_cast<int32_t>(Operand.Data.RIPLiteral.Value) - Entry;
+    } else {
+      Ptr = Operand.Data.RIPLiteral.Value;
+    }
+  } else if (Operand.IsSIB() || Operand.IsSIBRelocation()) {
+    const bool IsVSIB = IsLoad && ((Op->Flags & X86Tables::DecodeFlags::FLAG_VSIB_BYTE) != 0);
+    if (IsVSIB) {
+      // TODO: Unhandled.
+      return ~0ULL;
+    }
+    if (Operand.Data.SIB.Base != FEXCore::X86State::REG_INVALID) {
+      Ptr = Thread->CurrentFrame->State.gregs[Operand.Data.SIB.Base] & GPRMask;
+    }
+
+    if (Operand.Data.SIB.Index != FEXCore::X86State::REG_INVALID) {
+      Ptr += (Thread->CurrentFrame->State.gregs[Operand.Data.SIB.Index] * Operand.Data.SIB.Scale) & GPRMask;
+    }
+
+    Ptr += static_cast<int32_t>(Operand.Data.SIB.Offset);
+  }
+
+  auto AppendSegment = [&](uint64_t Ptr, uint32_t Flags, uint32_t DefaultPrefix = FEXCore::X86Tables::DecodeFlags::FLAG_NO_PREFIX,
+                           bool Override = false) -> uint64_t {
+    uint32_t Prefix = Flags & FEXCore::X86Tables::DecodeFlags::FLAG_SEGMENTS;
+
+    if (Is64BitMode) {
+      if (Prefix == FEXCore::X86Tables::DecodeFlags::FLAG_FS_PREFIX) {
+        return Ptr + Thread->CurrentFrame->State.fs_cached;
+      } else if (Prefix == FEXCore::X86Tables::DecodeFlags::FLAG_GS_PREFIX) {
+        return Ptr + Thread->CurrentFrame->State.gs_cached;
+      }
+      // If there was any other segment in 64bit then it is ignored
+    } else {
+      if (Prefix == FEXCore::X86Tables::DecodeFlags::FLAG_NO_PREFIX || Override) {
+        // If there was no prefix then use the default one if available
+        // Or the argument only uses a specific prefix (with override set)
+        Prefix = DefaultPrefix;
+      }
+      // With the segment register optimization we store the GDT bases directly in the segment register to remove indexed loads
+      switch (Prefix) {
+      [[likely]] case FEXCore::X86Tables::DecodeFlags::FLAG_NO_PREFIX:
+        return Ptr;
+      case FEXCore::X86Tables::DecodeFlags::FLAG_ES_PREFIX: return Ptr + Thread->CurrentFrame->State.es_cached;
+      case FEXCore::X86Tables::DecodeFlags::FLAG_CS_PREFIX: return Ptr + Thread->CurrentFrame->State.cs_cached;
+      case FEXCore::X86Tables::DecodeFlags::FLAG_SS_PREFIX: return Ptr + Thread->CurrentFrame->State.ss_cached;
+      case FEXCore::X86Tables::DecodeFlags::FLAG_DS_PREFIX: return Ptr + Thread->CurrentFrame->State.ds_cached;
+      case FEXCore::X86Tables::DecodeFlags::FLAG_FS_PREFIX: return Ptr + Thread->CurrentFrame->State.fs_cached;
+      case FEXCore::X86Tables::DecodeFlags::FLAG_GS_PREFIX: return Ptr + Thread->CurrentFrame->State.gs_cached;
+      default: FEX_UNREACHABLE;
+      }
+    }
+
+    return Ptr;
+  };
+
+  return AppendSegment(Ptr, Op->Flags);
+};
+
 AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand,
                                              MemoryAccessType AccessType, bool IsLoad) {
   const auto GPRSize = GetGPROpSize();
@@ -4306,6 +4412,7 @@ Ref OpDispatchBuilder::LoadSource_WithOpSize(RegClass Class, const X86Tables::De
   auto [Align, LoadData, ForceLoad, AccessType, AllowUpperGarbage] = Options;
   AddressMode A = DecodeAddress(Op, Operand, AccessType, true /* IsLoad */);
 
+  Ref Result {};
   if (Operand.IsGPR()) {
     const auto gpr = Operand.Data.GPR.GPR;
     const auto highIndex = Operand.Data.GPR.HighBits ? 1 : 0;
@@ -4335,22 +4442,35 @@ Ref OpDispatchBuilder::LoadSource_WithOpSize(RegClass Class, const X86Tables::De
     }
   }
 
-  if ((IsOperandMem(Operand, true) && LoadData) || ForceLoad) {
+  const bool ShouldLoad = (IsOperandMem(Operand, true) && LoadData) || ForceLoad;
+  if (ShouldLoad) {
     if (OpSize == OpSize::f80Bit) {
       Ref MemSrc = LoadEffectiveAddress(this, A, GetGPROpSize(), true);
-      if (CTX->HostFeatures.SupportsSVE128 || CTX->HostFeatures.SupportsSVE256) {
-        return _LoadMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, MemSrc);
+      if (CTX->HostFeatures.SupportsSVE()) {
+        Result = _LoadMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, MemSrc);
       } else {
         // For X87 extended doubles, Split the load.
         auto Res = _LoadMem(Class, OpSize::i64Bit, MemSrc, Align == OpSize::iInvalid ? OpSize : Align);
-        return _VLoadVectorElement(OpSize::i128Bit, OpSize::i16Bit, Res, 4, Add(OpSize::i64Bit, MemSrc, 8));
+        Result = _VLoadVectorElement(OpSize::i128Bit, OpSize::i16Bit, Res, 4, Add(OpSize::i64Bit, MemSrc, 8));
+      }
+    } else {
+      Result = _LoadMemAutoTSO(Class, OpSize, A, Align == OpSize::iInvalid ? OpSize : Align);
+    }
+  } else {
+    Result = LoadEffectiveAddress(this, A, GetGPROpSize(), false, AllowUpperGarbage);
+  }
+
+  if constexpr (Context::BLOCK_DEBUGGING) {
+    if (ShouldLoad && CTX->BlockDebuggerTracker.IsSingleStepTarget(Entry)) {
+      uint64_t Ptr = CalcAddress(Op, Operand, true);
+      if (CTX->BlockDebuggerTracker.ContainsReadWatchPoint(Ptr, OpSizeToSize(OpSize))) {
+        // It's up to the developer if they want more advanced debugging logic here.
+        LogMan::Msg::IFmt("Entrypoint 0x{:x} will hit read watch: [0x{:x}, 0x{:x})", Entry, Ptr, Ptr + OpSizeToSize(OpSize));
       }
     }
-
-    return _LoadMemAutoTSO(Class, OpSize, A, Align == OpSize::iInvalid ? OpSize : Align);
-  } else {
-    return LoadEffectiveAddress(this, A, GetGPROpSize(), false, AllowUpperGarbage);
   }
+
+  return Result;
 }
 
 Ref OpDispatchBuilder::LoadGPRRegister(uint32_t GPR, IR::OpSize Size, uint8_t Offset, bool AllowUpperGarbage) {
@@ -4465,7 +4585,7 @@ void OpDispatchBuilder::StoreResult_WithOpSize(RegClass Class, FEXCore::X86Table
 
   if (OpSize == OpSize::f80Bit) {
     Ref MemStoreDst = LoadEffectiveAddress(this, A, GetGPROpSize(), true);
-    if (CTX->HostFeatures.SupportsSVE128 || CTX->HostFeatures.SupportsSVE256) {
+    if (CTX->HostFeatures.SupportsSVE()) {
       _StoreMemX87SVEOptPredicate(OpSize::i128Bit, OpSize::i16Bit, Src, MemStoreDst);
     } else {
       // For X87 extended doubles, split before storing
@@ -4475,6 +4595,16 @@ void OpDispatchBuilder::StoreResult_WithOpSize(RegClass Class, FEXCore::X86Table
     }
   } else {
     _StoreMemAutoTSO(Class, OpSize, A, Src, Align == OpSize::iInvalid ? OpSize : Align);
+  }
+
+  if constexpr (Context::BLOCK_DEBUGGING) {
+    if (CTX->BlockDebuggerTracker.IsSingleStepTarget(Entry)) {
+      uint64_t Ptr = CalcAddress(Op, Operand, false);
+      if (CTX->BlockDebuggerTracker.ContainsWriteWatchPoint(Ptr, OpSizeToSize(OpSize))) {
+        // It's up to the developer if they want more advanced debugging logic here.
+        LogMan::Msg::IFmt("Entrypoint 0x{:x} will hit write watch: [0x{:x}, 0x{:x})", Entry, Ptr, Ptr + OpSizeToSize(OpSize));
+      }
+    }
   }
 }
 
@@ -4487,9 +4617,10 @@ void OpDispatchBuilder::StoreResult(RegClass Class, X86Tables::DecodedOp Op, Ref
   StoreResult(Class, Op, Op->Dest, Src, Align, AccessType);
 }
 
-OpDispatchBuilder::OpDispatchBuilder(FEXCore::Context::ContextImpl* ctx)
+OpDispatchBuilder::OpDispatchBuilder(FEXCore::Context::ContextImpl* ctx, FEXCore::Core::InternalThreadState* Thread)
   : IREmitter {ctx->OpDispatcherAllocator, ctx->HostFeatures.SupportsTSOImm9}
-  , CTX {ctx} {
+  , CTX {ctx}
+  , Thread {Thread} {
   if (CTX->HostFeatures.SupportsAVX && CTX->HostFeatures.SupportsSVE256) {
     SaveAVXStateFunc = &OpDispatchBuilder::SaveAVXState;
     RestoreAVXStateFunc = &OpDispatchBuilder::RestoreAVXState;
@@ -4647,35 +4778,36 @@ void OpDispatchBuilder::INTOp(OpcodeArgs) {
   case 0xCD: { // INT imm8
     uint8_t Literal = Op->Src[0].Literal();
 
-#ifndef _WIN32
-    constexpr uint8_t SYSCALL_LITERAL = 0x80;
-    if (Literal == SYSCALL_LITERAL) {
-      if (Is64BitMode) [[unlikely]] {
-        LogMan::Msg::EFmt("[Unsupported] Trying to execute 32-bit syscall from a 64-bit process.");
-        UnhandledOp(Op);
+    if (CTX->HostFeatures.HostType == FEXCore::HostFeatures::HostTypeEnum::Linux) {
+      constexpr uint8_t SYSCALL_LITERAL = 0x80;
+      if (Literal == SYSCALL_LITERAL) {
+        if (Is64BitMode) [[unlikely]] {
+          LogMan::Msg::EFmt("[Unsupported] Trying to execute 32-bit syscall from a 64-bit process.");
+          UnhandledOp(Op);
+          return;
+        }
+        // Syscall on linux
+        SyscallOp(Op, false);
         return;
       }
-      // Syscall on linux
-      SyscallOp(Op, false);
-      return;
-    }
-#else
-    constexpr uint8_t SYSCALL_LITERAL = 0x2E;
-    if (Literal == SYSCALL_LITERAL) {
-      // Can be used for both 64-bit and 32-bit syscalls on windows
-      SyscallOp(Op, false);
-      return;
-    }
-#endif
+    } else if (CTX->HostFeatures.HostType == FEXCore::HostFeatures::HostTypeEnum::Wow64 ||
+               CTX->HostFeatures.HostType == FEXCore::HostFeatures::HostTypeEnum::Arm64ec) {
+      constexpr uint8_t SYSCALL_LITERAL = 0x2E;
+      if (Literal == SYSCALL_LITERAL) {
+        // Can be used for both 64-bit and 32-bit syscalls on windows
+        SyscallOp(Op, false);
+        return;
+      }
 
-#ifdef ARCHITECTURE_arm64ec
-    // This is used when QueryPerformanceCounter is called on recent Windows versions, it causes CNTVCT to be written into RAX.
-    constexpr uint8_t GET_CNTVCT_LITERAL = 0x81;
-    if (Literal == GET_CNTVCT_LITERAL) {
-      StoreGPRRegister(X86State::REG_RAX, _CycleCounter(false));
-      return;
+      if (CTX->HostFeatures.HostType == FEXCore::HostFeatures::HostTypeEnum::Arm64ec) {
+        // This is used when QueryPerformanceCounter is called on recent Windows versions, it causes CNTVCT to be written into RAX.
+        constexpr uint8_t GET_CNTVCT_LITERAL = 0x81;
+        if (Literal == GET_CNTVCT_LITERAL) {
+          StoreGPRRegister(X86State::REG_RAX, _CycleCounter(false));
+          return;
+        }
+      }
     }
-#endif
 
     Reason.ErrorRegister = Literal << 3 | (0b010);
     Reason.Signal = Core::FAULT_SIGSEGV;
@@ -4925,6 +5057,7 @@ void OpDispatchBuilder::CRC32(OpcodeArgs) {
     return;
   }
   const auto GPRSize = GetGPROpSize();
+  const auto SrcSize = OpSizeFromSrc(Op);
 
   // Destination GPR size is always 4 or 8 bytes depending on widening
   const auto DstSize = Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_REX_WIDENING ? OpSize::i64Bit : OpSize::i32Bit;
@@ -4933,16 +5066,15 @@ void OpDispatchBuilder::CRC32(OpcodeArgs) {
   // Incoming memory is 8, 16, 32, or 64
   Ref Src {};
   if (Op->Src[0].IsGPR()) {
-    Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], GPRSize, Op->Flags);
+    Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], SrcSize, Op->Flags, {.AllowUpperGarbage = true});
   } else {
     Src = LoadSourceGPR(Op, Op->Src[0], Op->Flags, {.Align = OpSize::i8Bit});
   }
-  auto Result = _CRC32(Dest, Src, OpSizeFromSrc(Op));
+  auto Result = _CRC32(Dest, Src, SrcSize);
   StoreResultGPR_WithOpSize(Op, Op->Dest, Result, DstSize);
 }
 
-template<bool Reseed>
-void OpDispatchBuilder::RDRANDOp(OpcodeArgs) {
+void OpDispatchBuilder::RDRANDOp(OpcodeArgs, bool Reseed) {
   if (!CTX->HostFeatures.SupportsRAND) {
     UnimplementedOp(Op);
     return;
@@ -4966,9 +5098,6 @@ void OpDispatchBuilder::RDRANDOp(OpcodeArgs) {
     CFInverted = true;
   }
 }
-
-template void OpDispatchBuilder::RDRANDOp<true>(OpcodeArgs);
-template void OpDispatchBuilder::RDRANDOp<false>(OpcodeArgs);
 
 void OpDispatchBuilder::BreakOp(OpcodeArgs, FEXCore::IR::BreakDefinition BreakDefinition) {
   const auto GPRSize = GetGPROpSize();

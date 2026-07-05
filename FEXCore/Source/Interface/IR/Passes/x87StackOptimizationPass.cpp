@@ -188,7 +188,7 @@ private:
 
   void Store80BitToMem(const IROp_StoreStackMem* Op, Ref StackNode, Ref AddrNode, Ref Offset, OpSize Align, MemOffsetType OffsetType,
                        uint8_t OffsetScale) {
-    if (Features.SupportsSVE128 || Features.SupportsSVE256) {
+    if (Features.SupportsSVE()) {
       AddressMode A {.Base = AddrNode,
                      .Index = Op->Offset.IsInvalid() ? nullptr : Offset,
                      .IndexType = MemOffsetType::SXTX,
@@ -785,6 +785,12 @@ void X87StackOptimization::Run(IREmitter* Emit) {
         break;
       }
 
+      case OP_F80FYL2XP1STACK: {
+        HandleBinopStack(OP_F64FYL2XP1, false, OP_F80FYL2XP1, 1, 0, 1);
+        StackPop();
+        break;
+      }
+
       case OP_F80ATANSTACK: {
         HandleBinopStack(OP_F64ATAN, false, OP_F80ATAN, 1, 1, 0);
         StackPop();
@@ -1225,7 +1231,7 @@ void X87StackOptimization::Run(IREmitter* Emit) {
   return;
 }
 
-fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const FEXCore::HostFeatures& Features, OpSize GPROpSize) {
+fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures& Features, OpSize GPROpSize) {
   return fextl::make_unique<X87StackOptimization>(Features, GPROpSize);
 }
 } // namespace FEXCore::IR

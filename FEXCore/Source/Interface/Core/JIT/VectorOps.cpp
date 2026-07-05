@@ -1036,24 +1036,28 @@ DEF_OP(VMov) {
 
   const auto Dst = GetVReg(Node);
   const auto Source = GetVReg(Op->Source);
+  const auto Sub64BitHandler = [&](ARMEmitter::SubRegSize InsertSize) {
+    if (Dst != Source) {
+      movi(ARMEmitter::SubRegSize::i64Bit, Dst.Q(), 0);
+      ins(InsertSize, Dst, 0, Source, 0);
+    } else {
+      movi(ARMEmitter::SubRegSize::i64Bit, VTMP1.Q(), 0);
+      ins(InsertSize, VTMP1, 0, Source, 0);
+      mov(Dst.Q(), VTMP1.Q());
+    }
+  };
 
   switch (OpSize) {
   case IR::OpSize::i8Bit: {
-    movi(ARMEmitter::SubRegSize::i64Bit, VTMP1.Q(), 0);
-    ins(ARMEmitter::SubRegSize::i8Bit, VTMP1, 0, Source, 0);
-    mov(Dst.Q(), VTMP1.Q());
+    Sub64BitHandler(ARMEmitter::SubRegSize::i8Bit);
     break;
   }
   case IR::OpSize::i16Bit: {
-    movi(ARMEmitter::SubRegSize::i64Bit, VTMP1.Q(), 0);
-    ins(ARMEmitter::SubRegSize::i16Bit, VTMP1, 0, Source, 0);
-    mov(Dst.Q(), VTMP1.Q());
+    Sub64BitHandler(ARMEmitter::SubRegSize::i16Bit);
     break;
   }
   case IR::OpSize::i32Bit: {
-    movi(ARMEmitter::SubRegSize::i64Bit, VTMP1.Q(), 0);
-    ins(ARMEmitter::SubRegSize::i32Bit, VTMP1, 0, Source, 0);
-    mov(Dst.Q(), VTMP1.Q());
+    Sub64BitHandler(ARMEmitter::SubRegSize::i32Bit);
     break;
   }
   case IR::OpSize::i64Bit: {
@@ -1095,16 +1099,21 @@ DEF_OP(VAddP) {
   if (HostSupportsSVE256 && Is256Bit) {
     const auto Pred = PRED_TMP_32B.Merging();
 
-    // SVE ADDP is a destructive operation, so we need a temporary
-    movprfx(VTMP1.Z(), VectorLower.Z());
+    // SVE ADDP is a destructive operation, so we need a temporary if
+    // the destination and the lower vector don't alias.
+    auto LHS = Dst;
+    if (Dst != VectorLower) {
+      movprfx(VTMP1.Z(), VectorLower.Z());
+      LHS = VTMP1;
+    }
 
     // Unlike Adv. SIMD's version of ADDP, which acts like it concats the
     // upper vector onto the end of the lower vector and then performs
     // pairwise addition, the SVE version actually interleaves the
     // results of the pairwise addition (gross!), so we need to undo that.
-    addp(SubRegSize, VTMP1.Z(), Pred, VTMP1.Z(), VectorUpper.Z());
-    uzp1(SubRegSize, Dst.Z(), VTMP1.Z(), VTMP1.Z());
-    uzp2(SubRegSize, VTMP2.Z(), VTMP1.Z(), VTMP1.Z());
+    addp(SubRegSize, LHS.Z(), Pred, LHS.Z(), VectorUpper.Z());
+    uzp1(SubRegSize, Dst.Z(), LHS.Z(), LHS.Z());
+    uzp2(SubRegSize, VTMP2.Z(), LHS.Z(), LHS.Z());
 
     // Merge upper half with lower half.
     splice<ARMEmitter::OpType::Destructive>(ARMEmitter::SubRegSize::i64Bit, Dst.Z(), PRED_TMP_16B, Dst.Z(), VTMP2.Z());
@@ -1298,16 +1307,21 @@ DEF_OP(VFAddP) {
   if (HostSupportsSVE256 && Is256Bit) {
     const auto Pred = PRED_TMP_32B.Merging();
 
-    // SVE FADDP is a destructive operation, so we need a temporary
-    movprfx(VTMP1.Z(), VectorLower.Z());
+    // SVE FADDP is a destructive operation, so we need a temporary if
+    // the destination and the lower vector don't alias.
+    auto LHS = Dst;
+    if (Dst != VectorLower) {
+      movprfx(VTMP1.Z(), VectorLower.Z());
+      LHS = VTMP1;
+    }
 
     // Unlike Adv. SIMD's version of FADDP, which acts like it concats the
     // upper vector onto the end of the lower vector and then performs
     // pairwise addition, the SVE version actually interleaves the
     // results of the pairwise addition (gross!), so we need to undo that.
-    faddp(SubRegSize, VTMP1.Z(), Pred, VTMP1.Z(), VectorUpper.Z());
-    uzp1(SubRegSize, Dst.Z(), VTMP1.Z(), VTMP1.Z());
-    uzp2(SubRegSize, VTMP2.Z(), VTMP1.Z(), VTMP1.Z());
+    faddp(SubRegSize, LHS.Z(), Pred, LHS.Z(), VectorUpper.Z());
+    uzp1(SubRegSize, Dst.Z(), LHS.Z(), LHS.Z());
+    uzp2(SubRegSize, VTMP2.Z(), LHS.Z(), LHS.Z());
 
     // Merge upper half with lower half.
     splice<ARMEmitter::OpType::Destructive>(ARMEmitter::SubRegSize::i64Bit, Dst.Z(), PRED_TMP_16B, Dst.Z(), VTMP2.Z());
@@ -1526,9 +1540,14 @@ DEF_OP(VFRecp) {
       return;
     }
 
-    fmov(SubRegSize.Vector, VTMP1.Z(), 1.0);
-    fdiv(SubRegSize.Vector, VTMP1.Z(), Pred, VTMP1.Z(), Vector.Z());
-    mov(Dst.Z(), VTMP1.Z());
+    if (Dst != Vector) {
+      fmov(SubRegSize.Vector, Dst.Z(), 1.0);
+      fdiv(SubRegSize.Vector, Dst.Z(), Pred, Dst.Z(), Vector.Z());
+    } else {
+      fmov(SubRegSize.Vector, VTMP1.Z(), 1.0);
+      fdiv(SubRegSize.Vector, VTMP1.Z(), Pred, VTMP1.Z(), Vector.Z());
+      mov(Dst.Z(), VTMP1.Z());
+    }
   } else {
     if (IsScalar) {
       if (ElementSize == IR::OpSize::i32Bit && HostSupportsRPRES) {
@@ -1780,10 +1799,14 @@ DEF_OP(VUMin) {
       break;
     }
     case IR::OpSize::i64Bit: {
-      cmhi(SubRegSize, VTMP1.Q(), Vector2.Q(), Vector1.Q());
-      mov(VTMP2.Q(), Vector1.Q());
-      bif(VTMP2.Q(), Vector2.Q(), VTMP1.Q());
-      mov(Dst.Q(), VTMP2.Q());
+      if (Dst != Vector1 && Dst != Vector2) {
+        cmhi(SubRegSize, Dst.Q(), Vector1.Q(), Vector2.Q());
+        bsl(Dst.Q(), Vector2.Q(), Vector1.Q());
+      } else {
+        cmhi(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
+        bsl(VTMP1.Q(), Vector2.Q(), Vector1.Q());
+        mov(Dst.Q(), VTMP1.Q());
+      }
       break;
     }
     default: break;
@@ -1829,10 +1852,14 @@ DEF_OP(VSMin) {
       break;
     }
     case IR::OpSize::i64Bit: {
-      cmgt(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
-      mov(VTMP2.Q(), Vector1.Q());
-      bif(VTMP2.Q(), Vector2.Q(), VTMP1.Q());
-      mov(Dst.Q(), VTMP2.Q());
+      if (Dst != Vector1 && Dst != Vector2) {
+        cmgt(SubRegSize, Dst.Q(), Vector1.Q(), Vector2.Q());
+        bsl(Dst.Q(), Vector2.Q(), Vector1.Q());
+      } else {
+        cmgt(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
+        bsl(VTMP1.Q(), Vector2.Q(), Vector1.Q());
+        mov(Dst.Q(), VTMP1.Q());
+      }
       break;
     }
     default: break;
@@ -1878,10 +1905,14 @@ DEF_OP(VUMax) {
       break;
     }
     case IR::OpSize::i64Bit: {
-      cmhi(SubRegSize, VTMP1.Q(), Vector2.Q(), Vector1.Q());
-      mov(VTMP2.Q(), Vector1.Q());
-      bif(VTMP2.Q(), Vector2.Q(), VTMP1.Q());
-      mov(Dst.Q(), VTMP2.Q());
+      if (Dst != Vector1 && Dst != Vector2) {
+        cmhi(SubRegSize, Dst.Q(), Vector1.Q(), Vector2.Q());
+        bsl(Dst.Q(), Vector1.Q(), Vector2.Q());
+      } else {
+        cmhi(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
+        bsl(VTMP1.Q(), Vector1.Q(), Vector2.Q());
+        mov(Dst.Q(), VTMP1.Q());
+      }
       break;
     }
     default: break;
@@ -1927,10 +1958,14 @@ DEF_OP(VSMax) {
       break;
     }
     case IR::OpSize::i64Bit: {
-      cmgt(SubRegSize, VTMP1.Q(), Vector2.Q(), Vector1.Q());
-      mov(VTMP2.Q(), Vector1.Q());
-      bif(VTMP2.Q(), Vector2.Q(), VTMP1.Q());
-      mov(Dst.Q(), VTMP2.Q());
+      if (Dst != Vector1 && Dst != Vector2) {
+        cmgt(SubRegSize, Dst.Q(), Vector1.Q(), Vector2.Q());
+        bsl(Dst.Q(), Vector1.Q(), Vector2.Q());
+      } else {
+        cmgt(SubRegSize, VTMP1.Q(), Vector1.Q(), Vector2.Q());
+        bsl(VTMP1.Q(), Vector1.Q(), Vector2.Q());
+        mov(Dst.Q(), VTMP1.Q());
+      }
       break;
     }
     default: break;
@@ -2980,9 +3015,14 @@ DEF_OP(VInsElement) {
   auto Reg = GetVReg(Op->DestVector);
 
   if (HostSupportsSVE256 && Is256Bit) {
-    // Broadcast our source value across a temporary,
-    // then combine with the destination.
-    dup(SubRegSize, VTMP2.Z(), SrcVector.Z(), SrcIdx);
+    // Broadcast our source value across a temporary, then combine
+    // with the destination.
+    //
+    // We don't need to perform the dup if we're just merging a 128-bit vector into
+    // into an equivalent position since we have a predicate set up already.
+    if (!(ElementSize == IR::OpSize::i128Bit && SrcIdx == DestIdx)) {
+      dup(SubRegSize, VTMP2.Z(), SrcVector.Z(), SrcIdx);
+    }
 
     // We don't need to move the data unnecessarily if
     // DestVector just so happens to also be the IR op
@@ -2995,10 +3035,12 @@ DEF_OP(VInsElement) {
 
     if (ElementSize == IR::OpSize::i128Bit) {
       if (DestIdx == 0) {
-        mov(ARMEmitter::SubRegSize::i8Bit, Dst.Z(), PRED_TMP_16B.Merging(), VTMP2.Z());
+        const auto Source = SrcIdx == 0 ? SrcVector : VTMP2;
+        mov(ARMEmitter::SubRegSize::i8Bit, Dst.Z(), PRED_TMP_16B.Merging(), Source.Z());
       } else {
+        const auto Source = SrcIdx == 1 ? SrcVector : VTMP2;
         not_(Predicate, PRED_TMP_32B.Zeroing(), PRED_TMP_16B);
-        mov(ARMEmitter::SubRegSize::i8Bit, Dst.Z(), Predicate.Merging(), VTMP2.Z());
+        mov(ARMEmitter::SubRegSize::i8Bit, Dst.Z(), Predicate.Merging(), Source.Z());
       }
     } else {
       const auto UpperBound = 16 >> FEXCore::ilog2(IR::OpSizeToSize(ElementSize));
@@ -4435,7 +4477,7 @@ DEF_OP(VFNMLA) {
   // - SVE    - FMLS
   // - ASIMD  - FMLS
   // - Scalar - FMSUB
-  const auto Op = IROp->C<IR::IROp_VFMLA>();
+  const auto Op = IROp->C<IR::IROp_VFNMLA>();
   const auto OpSize = IROp->Size;
 
   const auto SubRegSize = ConvertSubRegSize248(IROp);
@@ -4503,7 +4545,7 @@ DEF_OP(VFNMLS) {
   // - ASIMD  - FMLS (With Negated addend)
   // - Scalar - FNMADD
 
-  const auto Op = IROp->C<IR::IROp_VFMLS>();
+  const auto Op = IROp->C<IR::IROp_VFNMLS>();
   const auto OpSize = IROp->Size;
 
   const auto SubRegSize = ConvertSubRegSize248(IROp);
@@ -4612,6 +4654,36 @@ DEF_OP(VFCopySign) {
   }
 }
 
+DEF_OP(F64FPREM) {
+  const auto Op = IROp->C<IR::IROp_F64FPREM>();
+  const auto Dst = GetVReg(Node);
+  const auto Src1 = GetVReg(Op->Src1);
+  const auto Src2 = GetVReg(Op->Src2);
+
+  fmov(VTMP1.D(), Src1.D());
+  fmov(VTMP2.D(), Src2.D());
+  ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64FPREMHandler));
+  str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
+  blr(TMP1);
+  ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);
+  fmov(Dst.D(), VTMP1.D());
+}
+
+DEF_OP(F64FPREM1) {
+  const auto Op = IROp->C<IR::IROp_F64FPREM1>();
+  const auto Dst = GetVReg(Node);
+  const auto Src1 = GetVReg(Op->Src1);
+  const auto Src2 = GetVReg(Op->Src2);
+
+  fmov(VTMP1.D(), Src1.D());
+  fmov(VTMP2.D(), Src2.D());
+  ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64FPREM1Handler));
+  str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
+  blr(TMP1);
+  ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);
+  fmov(Dst.D(), VTMP1.D());
+}
+
 DEF_OP(F64SIN) {
   const auto Op = IROp->C<IR::IROp_F64SIN>();
   const auto Src = GetVReg(Op->Src);
@@ -4677,6 +4749,22 @@ DEF_OP(F64FYL2X) {
   fmov(VTMP1.D(), Src.D());
   fmov(VTMP2.D(), Src2.D());
   ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64FYL2XHandler));
+  str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
+  blr(TMP1);
+  ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);
+  fmov(Dst.D(), VTMP1.D());
+}
+
+// Src=x(ST0), Src2=y(ST1). Marshal into VTMP1/VTMP2 and dispatch the shared handler.
+DEF_OP(F64FYL2XP1) {
+  const auto Op = IROp->C<IR::IROp_F64FYL2XP1>();
+  const auto Src = GetVReg(Op->Src);
+  const auto Src2 = GetVReg(Op->Src2);
+  const auto Dst = GetVReg(Node);
+
+  fmov(VTMP1.D(), Src.D());
+  fmov(VTMP2.D(), Src2.D());
+  ldr(TMP1, STATE_PTR(CpuStateFrame, Pointers.F64FYL2XP1Handler));
   str<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, -16);
   blr(TMP1);
   ldr<ARMEmitter::IndexType::POST>(ARMEmitter::XReg::lr, ARMEmitter::Reg::rsp, 16);

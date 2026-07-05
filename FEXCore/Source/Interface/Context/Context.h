@@ -64,6 +64,8 @@ struct CustomIRResult {
 using BlockDelinkerFunc = void (*)(FEXCore::Context::ExitFunctionLinkData* Record);
 constexpr uint32_t TSC_SCALE_MAXIMUM = 1'000'000'000; ///< 1Ghz
 
+constexpr static bool BLOCK_DEBUGGING = false;
+
 class CodeCache : public AbstractCodeCache {
 public:
   CodeCache(ContextImpl&);
@@ -76,11 +78,17 @@ public:
   bool IsGeneratingCache = false;
 
   FEX_CONFIG_OPT(EnableCodeCaching, ENABLECODECACHINGWIP);
+  FEX_CONFIG_OPT(EnableLazyCodeCaching, ENABLELAZYCODECACHINGWIP);
   FEX_CONFIG_OPT(EnableCodeCacheValidation, ENABLECODECACHEVALIDATION);
 
   uint64_t ComputeCodeMapId(std::string_view Filename, int FD) override;
   bool SaveData(Core::InternalThreadState&, int TargetFD, const ExecutableFileSectionInfo&, uint64_t SerializedBaseAddress) override;
-  bool LoadData(Core::InternalThreadState*, std::byte* MappedCacheFile, const ExecutableFileSectionInfo&) override;
+
+  fextl::unique_ptr<MappedCodeCacheFile> LoadCache(std::span<std::byte> CacheFile, const ExecutableFileInfo&, uint64_t FileStartVA) override;
+
+  bool EnableLoadedSection(Core::InternalThreadState*, MappedCodeCacheFile&, const ExecutableFileSectionInfo&) override;
+
+  void FinalizeCodePages(MappedCodeCacheFile&, std::span<std::byte> CodeRange) override;
 
   /**
    * Performs expensive extra validation on the loaded code cache data.
@@ -112,12 +120,14 @@ public:
    * Note that FEX relocations are unrelated to ELF/PE relocations.
    *
    * @param GuestDelta Guest address offset to apply to RIP-relative data
+   * @param RelocationOffset Offset to subtract from relocation target offsets
    * @param ForStorage True for serializing data (producing deterministic output); false for de-serializing it (resolving dynamic symbols)
    *
    * @return Returns true on success
    */
   [[nodiscard]]
-  bool ApplyCodeRelocations(uint64_t GuestDelta, std::span<std::byte> Code, std::span<const CPU::Relocation> Relocations, bool ForStorage);
+  bool ApplyCodeRelocations(uint64_t GuestDelta, std::span<std::byte> Code, std::span<const CPU::Relocation> Relocations,
+                            uint32_t RelocationOffset, bool ForStorage);
 };
 
 class ContextImpl final : public FEXCore::Context::Context, public CPU::CodeBufferManager {
@@ -233,6 +243,83 @@ public:
 
   void MarkMonoBackpatcherBlock(uint64_t BlockEntry) override;
 
+  // Manual debugging tooling which is useful for developers.
+  struct TrackingEmpty {
+    // RIP stepping handling
+    virtual void AddSingleStepTarget(uint64_t GuestRIP) {}
+    virtual void AllTargetSingleStep() {}
+    virtual void RemoveSingleStepTarget(uint64_t GuestRIP) {}
+    virtual bool IsSingleStepTarget(uint64_t GuestRIP) {
+      return false;
+    }
+
+    // Watchpoints
+    virtual void AddWriteWatchPoint(uint64_t Ptr) {}
+    virtual void AddReadWatchPoint(uint64_t Ptr) {}
+    virtual bool ContainsWriteWatchPoint(uint64_t Ptr, size_t Size) {
+      return false;
+    }
+    virtual bool ContainsReadWatchPoint(uint64_t Ptr, size_t Size) {
+      return false;
+    }
+  };
+
+  struct TrackingPossible final : public TrackingEmpty {
+    void AddSingleStepTarget(uint64_t GuestRIP) override {
+      SingleStepTargets.emplace(GuestRIP);
+    }
+
+    void RemoveSingleStepTarget(uint64_t GuestRIP) override {
+      SingleStepTargets.erase(GuestRIP);
+    }
+
+    void AllTargetSingleStep() override {
+      SingleStepEverything = true;
+    }
+
+    bool IsSingleStepTarget(uint64_t GuestRIP) override {
+      return SingleStepEverything || SingleStepTargets.contains(GuestRIP);
+    }
+
+    void AddWriteWatchPoint(uint64_t Ptr) override {
+      WatchWriteTargets.emplace(Ptr);
+    }
+
+    void AddReadWatchPoint(uint64_t Ptr) override {
+      WatchReadTargets.emplace(Ptr);
+    }
+
+    bool ContainsWriteWatchPoint(uint64_t Ptr, size_t Size) override {
+      return ContainsRange(WatchWriteTargets, Ptr, Size);
+    }
+
+    bool ContainsReadWatchPoint(uint64_t Ptr, size_t Size) override {
+      return ContainsRange(WatchReadTargets, Ptr, Size);
+    }
+
+  private:
+    bool SingleStepEverything {};
+    fextl::set<uint64_t> SingleStepTargets {};
+    fextl::set<uint64_t> WatchWriteTargets {};
+    fextl::set<uint64_t> WatchReadTargets {};
+
+    static bool ContainsRange(const fextl::set<uint64_t>& Set, uint64_t Ptr, size_t Size) {
+      for (auto it = Set.lower_bound(Ptr); it != Set.end(); --it) {
+        auto Watch = *it;
+        if (Watch < Ptr) {
+          break;
+        }
+        if (Watch >= Ptr && Watch < (Ptr + Size)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+  };
+  using TrackingStructure = std::conditional<BLOCK_DEBUGGING, TrackingPossible, TrackingEmpty>::type;
+
+  TrackingStructure BlockDebuggerTracker {};
 public:
   struct {
     uint64_t VirtualMemSize {1ULL << 36};

@@ -172,7 +172,7 @@ FEXCore::ExecutableFileSectionInfo ImageTracker::HandleImageMap(std::string_view
 
     auto AOTImage = AOTImages.find(ID);
     if (AOTImage != AOTImages.end()) {
-      CTX.GetCodeCache().LoadData(nullptr, AOTImage->second.Data, ImageInfo->SectionInfo);
+      // TODO: CodeCache::EnableLoadedSection
     }
   }
 
@@ -180,7 +180,10 @@ FEXCore::ExecutableFileSectionInfo ImageTracker::HandleImageMap(std::string_view
   fextl::set<uint64_t> VolatileInstructions {};
   FEXCore::IntervalList<uint64_t> VolatileValidRanges {};
   LoadImageVolatileMetadata(VolatileInstructions, VolatileValidRanges, Module, Nt, Address, EndAddress);
-  if (auto It = ExtendedMetaData.find(ModuleName); It != ExtendedMetaData.end()) {
+  if (auto It = ExtendedMetaData.find(ID); It != ExtendedMetaData.end()) {
+    FEX::VolatileMetadata::ApplyFEXExtendedVolatileMetadata(It->second, VolatileInstructions, VolatileValidRanges, Address, EndAddress);
+  }
+  if (auto It = ExtendedMetaData.find(fextl::string {ModuleName}); It != ExtendedMetaData.end()) {
     FEX::VolatileMetadata::ApplyFEXExtendedVolatileMetadata(It->second, VolatileInstructions, VolatileValidRanges, Address, EndAddress);
   }
 
@@ -277,6 +280,7 @@ void ImageTracker::LoadAOTImages(MappedImageInfo& ImageInfo) {
               RtlUnicodeToMultiByteN(UniqueId.data(), AnsiLength, NULL, Info->FileName, Info->FileNameLength);
 
               AOTImages[UniqueId] = {.Data = static_cast<std::byte*>(LoadAddress)};
+              // TODO: CodeCache::LoadCache, CodeCache::RegisterMappedCodeBuffer
               LogMan::Msg::IFmt("Loaded cache: {}", UniqueId);
             }
           }
