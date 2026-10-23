@@ -38,15 +38,13 @@ namespace FEXCore::Allocator {
 MMAP_Hook mmap {::mmap};
 MUNMAP_Hook munmap {::munmap};
 
-uint64_t HostVASize {};
-
 using GLIBC_MALLOC_Hook = void* (*)(size_t, const void* caller);
 using GLIBC_REALLOC_Hook = void* (*)(void*, size_t, const void* caller);
 using GLIBC_FREE_Hook = void (*)(void*, const void* caller);
 
-fextl::unique_ptr<Alloc::HostAllocator> Alloc64 {};
+static fextl::unique_ptr<Alloc::HostAllocator> Alloc64 {};
 
-void* FEX_mmap(void* addr, size_t length, int prot, int flags, int fd, off_t offset) {
+static void* FEX_mmap(void* addr, size_t length, int prot, int flags, int fd, off_t offset) {
   void* Result = Alloc64->Mmap(addr, length, prot, flags, fd, offset);
   if (Result >= (void*)-4096) {
     errno = -(uint64_t)Result;
@@ -70,7 +68,7 @@ void VirtualName(const char* Name, void* Ptr, size_t Size) {
   }
 }
 
-int FEX_munmap(void* addr, size_t length) {
+static int FEX_munmap(void* addr, size_t length) {
   int Result = Alloc64->Munmap(addr, length);
 
   if (Result != 0) {
@@ -104,9 +102,11 @@ void ClearHooks() {
 }
 #pragma GCC diagnostic pop
 
-FEX_DEFAULT_VISIBILITY size_t DetermineVASize() {
-  if (HostVASize) {
-    return HostVASize;
+FEX_DEFAULT_VISIBILITY size_t GetHostVABits() {
+  static uint64_t HostVABits = 0;
+
+  if (HostVABits) {
+    return HostVABits;
   }
 
   static constexpr std::array<uintptr_t, 7> TLBSizes = {
@@ -125,6 +125,7 @@ FEX_DEFAULT_VISIBILITY size_t DetermineVASize() {
       ::munmap(Ptr, FEXCore::Utils::FEX_PAGE_SIZE);
     }
     if (Ptr != (void*)~0ULL || errno == EEXIST) {
+      HostVABits = Bits;
       return Bits;
     }
   }
@@ -217,7 +218,12 @@ fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
   const uintptr_t StackLocation_u64 = reinterpret_cast<uintptr_t>(alloca(0));
 
   const int MapsFD = open("/proc/self/maps", O_RDONLY);
-  LogMan::Throw::AFmt(MapsFD != -1, "Failed to open /proc/self/maps");
+  if (MapsFD == -1) {
+    // No procfs, as in BuildKit's emulator probe (an empty chroot). The assert
+    // above it compiles out in release, and CollectMemoryGaps then spins on
+    // read(-1) forever; reserve nothing instead.
+    return {};
+  }
 
   auto Regions = CollectMemoryGaps(Begin, End, MapsFD);
   close(MapsFD);
@@ -273,7 +279,7 @@ fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
 }
 
 fextl::vector<MemoryRegion> Setup48BitAllocatorIfExists(size_t PageSize) {
-  size_t Bits = FEXCore::Allocator::DetermineVASize();
+  size_t Bits = FEXCore::Allocator::GetHostVABits();
   if (Bits < 48) {
     return {};
   }
@@ -281,6 +287,9 @@ fextl::vector<MemoryRegion> Setup48BitAllocatorIfExists(size_t PageSize) {
   uintptr_t Begin48BitVA = 0x0'8000'0000'0000ULL;
   uintptr_t End48BitVA = 0x1'0000'0000'0000ULL;
   auto Regions = StealMemoryRegion(Begin48BitVA, End48BitVA);
+  if (Regions.empty()) {
+    return {};
+  }
 
   Alloc64 = Alloc::OSAllocator::Create64BitAllocatorWithRegions(Regions);
   AssignHookOverrides(PageSize);
@@ -316,6 +325,7 @@ VirtualTHPPtr VirtualTHPControl {VirtualTHPNOP};
 void SetupHooks(size_t PageSize, HookPtrs Ptrs) {
   VirtualName = Ptrs.VirtualName;
   VirtualTHPControl = Ptrs.VirtualTHPControl;
+  SetupAllocatorHooks(VirtualName);
 }
 
 #endif
